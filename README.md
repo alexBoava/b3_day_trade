@@ -160,25 +160,47 @@ streamlit run app.py
 
 ---
 
-## 📊 Estratégias de Swing Trade Implementadas
+## 📊 Estratégias e Inteligência de Mercado
 
-### 1. Recuo na Tendência (Trend Pullback)
+### 1. Divergência de Alta no IFR (Reversão de Fundo de Alta Precisão)
+- **Condição**: O preço faz um fundo descendente ou igual, enquanto o IFR(14) faz um fundo claramente mais alto (esgotamento vendedor).
+- **Gatilho**: Reação do candle e rompimento de máxima anterior.
+- **Stop Loss**: Posicionado cirurgicamente logo abaixo do fundo da divergência (baixo risco).
+
+### 2. Força Relativa contra o Ibovespa (Alpha da Ação)
+- **Condição**: Mede o excesso de retorno da ação sobre o índice (`BOVA11`) em 20 e 60 pregões.
+- **Identificação**: Classifica ações em `🚀 Líder de Mercado`, `🟢 Acima do Ibov`, `🟡 Alinhada` ou `🔴 Fraca/Atrasada`.
+- **Filtro**: Permite selecionar apenas ativos com Alpha positivo.
+
+### 3. Alertas de Calendário (Balanço Trimestral & Proventos)
+- **Condição**: Monitora automaticamente a proximidade da divulgação de resultados e datas-ex.
+- **Alerta de Risco**: Emite aviso visual `⚠️ Balanço em X dias` e permite filtrar/ocultar esses papéis para evitar perdas por gaps de abertura.
+
+### 4. Filtro de Liquidez Financeira Mínima
+- **Condição**: Calcula o Volume Financeiro Médio de 20 pregões ($Preço \times Volume$).
+- **Filtro**: Assegura que apenas papéis com liquidez suficiente ($\ge \text{R\$} 5\text{M/dia}$) sejam priorizados.
+
+### 5. Termômetro de Regime do Mercado (Ibovespa)
+- **Condição**: Avalia a posição do Ibov contra as médias EMA 20, 50 e 200 no topo do painel.
+- **Orientação**: Alerta se o momento do mercado geral é `🟢 Favorável`, `🟡 Cautela` ou `🔴 Defensivo`.
+
+### 6. Recuo na Tendência (Trend Pullback)
 - **Condição**: Ativo em tendência de alta ($Preço > EMA_{50}$ e $EMA_{20} > EMA_{50}$).
 - **Correção**: Preço recuou até a região da $EMA_{20}$ ou $EMA_{50}$ (distância $\le 3\%$).
 - **Momento**: IFR (14) em correção equilibrada (entre 35 e 55).
 - **Gatilho**: Candle de reversão (Martelo, Engolfo de Alta ou fechamento positivo).
 
-### 2. Sobrevenda em Suporte (IFR < 38)
+### 7. Sobrevenda em Suporte (IFR < 38)
 - **Condição**: IFR (14) atingiu nível sobrevendido ($\le 38$).
 - **Região**: Preço próximo da Banda Inferior de Bollinger ou $EMA_{200}$.
 - **Gatilho**: Reação compradora para busca de repique técnico até a média.
 
-### 3. Setup 9.1 de Larry Williams
+### 8. Setup 9.1 de Larry Williams
 - **Condição**: A $EMA_9$ vinha apontando para baixo e virou para cima em candle de alta.
 - **Filtro**: Preço acima da $EMA_{50}$ ou $EMA_{200}$.
 - **Gatilho**: Rompimento da máxima do candle que virou a média.
 
-### 4. Rompimento de Resistência (Breakout)
+### 9. Rompimento de Resistência (Breakout)
 - **Condição**: Fechamento rompe a máxima dos últimos 20 dias úteis.
 - **Volume**: Volume financeiro do dia pelo menos $1.25\times$ acima da média móvel de 20 dias de volume.
 

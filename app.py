@@ -16,8 +16,8 @@ from database.connection import check_db_connection, DATABASE_TYPE
 from src.data_collector import (
     get_active_tickers, add_ticker, remove_ticker,
     sync_all_tickers, sync_ticker_data, load_candles_from_db,
-    get_or_sync_ticker_candles, get_database_stats,
-    save_candles_to_db, ensure_initial_tickers
+    get_or_sync_ticker_candles, get_database_stats, get_market_regime,
+    fetch_calendar_events, ensure_initial_tickers
 )
 from database.models import SwingSignal
 from database.connection import get_db_session
@@ -31,7 +31,7 @@ ensure_initial_tickers()
 
 # Sidebar
 st.sidebar.title("📈 B3 Swing Trade")
-st.sidebar.caption("Monitor & Rastreador Técnico com Banco de Dados")
+st.sidebar.caption("Monitor & Rastreador Técnico com Inteligência de Mercado")
 
 # Indicador de Banco de Dados
 db_ok, db_info = check_db_connection()
@@ -50,7 +50,7 @@ s_col1.metric("Candles no Banco", f"{db_stats['total_candles']:,}")
 s_col2.metric("Ativos Ativos", db_stats['total_tickers'])
 
 if db_stats['latest_candle_date']:
-    st.sidebar.caption(f"📅 Último candle gravado: **{db_stats['latest_candle_date'].strftime('%d/%m/%Y')}**")
+    st.sidebar.caption(f"📅 Último pregão gravado: **{db_stats['latest_candle_date'].strftime('%d/%m/%Y')}**")
 else:
     st.sidebar.caption("⚠️ Nenhum candle gravado ainda.")
 
@@ -70,7 +70,7 @@ st.sidebar.markdown("---")
 
 # Opções de Sincronização
 st.sidebar.markdown("### 🔄 Sincronização Inteligente")
-st.sidebar.caption("O sistema usa **Cache Local**. Só baixa da B3 o que estiver desatualizado.")
+st.sidebar.caption("Cache Local ativo: só baixa o que estiver desatualizado.")
 force_download = st.sidebar.checkbox("Forçar download completo (1 ano)", value=False)
 
 if st.sidebar.button("🚀 Sincronizar Mercado Agora", use_container_width=True):
@@ -81,7 +81,7 @@ if st.sidebar.button("🚀 Sincronizar Mercado Agora", use_container_width=True)
         progress_bar.progress(pct)
         status_text.caption(text)
 
-    with st.spinner("Verificando banco de dados e sincronizando se necessário..."):
+    with st.spinner("Atualizando benchmark, candles e eventos corporativos..."):
         results = sync_all_tickers(force_download=force_download, progress_callback=update_progress)
         st.session_state["market_data"] = results
         st.session_state["last_sync"] = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
@@ -95,8 +95,8 @@ if "last_sync" in st.session_state:
 
 st.sidebar.markdown("---")
 st.sidebar.info(
-    "💡 **Persistência Garantida:**\n"
-    "Os dados dos candles ficam armazenados de forma permanente no banco de dados, evitando downloads repetidos e acelerando a análise."
+    "💡 **Regra de Ouro do Swing Trade:**\n"
+    "Opere a favor dos ativos líderes em Força Relativa e evite compras na véspera de divulgação de balanços."
 )
 
 # -----------------------------------------------------------------------------
@@ -104,7 +104,7 @@ st.sidebar.info(
 # -----------------------------------------------------------------------------
 def get_market_analysis(force: bool = False):
     if "market_data" not in st.session_state or not st.session_state["market_data"] or force:
-        with st.spinner("Carregando análise (priorizando cache do banco)..."):
+        with st.spinner("Carregando análise e calculando força relativa vs Ibov..."):
             st.session_state["market_data"] = sync_all_tickers(force_download=force)
             st.session_state["last_sync"] = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     return st.session_state["market_data"]
@@ -115,7 +115,26 @@ def get_market_analysis(force: bool = False):
 # -----------------------------------------------------------------------------
 if selected_menu == "🎯 Radar de Oportunidades":
     st.title("🎯 Radar de Oportunidades - Swing Trade B3")
-    st.markdown("Identificação automática de ações com setups técnicos em gráficos diários, com persistência em banco.")
+
+    # Termômetro do Mercado Geral (Ibovespa)
+    regime = get_market_regime()
+    with st.container():
+        r_col1, r_col2 = st.columns([1, 3])
+        with r_col1:
+            st.metric(
+                "Benchmark (BOVA11 / Ibov)",
+                f"R$ {regime['bova_close']:.2f}" if regime['bova_close'] > 0 else "N/A",
+                f"{regime['bova_var']:+.2f}%" if regime['bova_close'] > 0 else None
+            )
+        with r_col2:
+            if regime['status'] == 'Favorável':
+                st.success(f"**{regime['badge']}**\n\n{regime['detail']}")
+            elif regime['status'] == 'Cautela':
+                st.warning(f"**{regime['badge']}**\n\n{regime['detail']}")
+            else:
+                st.error(f"**{regime['badge']}**\n\n{regime['detail']}")
+
+    st.markdown("---")
 
     market_data = get_market_analysis()
 
@@ -128,15 +147,17 @@ if selected_menu == "🎯 Radar de Oportunidades":
         total_ativos = len(df_screener)
         compras_fortes = len(df_screener[df_screener['signal'] == 'COMPRA FORTE'])
         compras = len(df_screener[df_screener['signal'] == 'COMPRA'])
-        em_alta = len(df_screener[df_screener['trend'].isin(['Alta', 'Forte Alta'])])
+        lideres_ibov = len(df_screener[df_screener.get('is_outperforming', False) == True])
+        divergencias_count = len(df_screener[df_screener['strategy'].str.contains('Divergência', na=False)])
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Ativos Monitorados", total_ativos)
-        col2.metric("Sinais Compra Forte", compras_fortes, delta=f"{compras_fortes} ativos" if compras_fortes else None)
-        col3.metric("Oportunidades de Compra", compras, delta=f"{compras} ativos" if compras else None)
-        col4.metric("Em Tendência de Alta", f"{em_alta}/{total_ativos}", delta=f"{(em_alta/total_ativos)*100:.0f}%")
+        kcol1, kcol2, kcol3, kcol4, kcol5 = st.columns(5)
+        kcol1.metric("Ativos Monitorados", total_ativos)
+        kcol2.metric("Sinais Compra Forte", compras_fortes, delta=f"{compras_fortes} ativos" if compras_fortes else None)
+        kcol3.metric("Oportunidades Compra", compras, delta=f"{compras} ativos" if compras else None)
+        kcol4.metric("Divergências IFR", divergencias_count, delta="Reversão" if divergencias_count else None)
+        kcol5.metric("Líderes vs Ibov", f"{lideres_ibov}/{total_ativos}", delta=f"{(lideres_ibov/total_ativos)*100:.0f}%")
 
-        st.markdown("### Filtros de Busca")
+        st.markdown("### 🔍 Filtros Avançados de Seleção")
         fcol1, fcol2, fcol3 = st.columns(3)
 
         with fcol1:
@@ -145,12 +166,16 @@ if selected_menu == "🎯 Radar de Oportunidades":
                 options=["COMPRA FORTE", "COMPRA", "ATENÇÃO (Aguardando Gatilho)", "NEUTRO", "ALERTA (Sobrecomprado)"],
                 default=["COMPRA FORTE", "COMPRA", "ATENÇÃO (Aguardando Gatilho)"]
             )
+            apenas_lideres = st.checkbox("🚀 Apenas Ações com Força Relativa Positiva (Alpha > 0)", value=False)
+
         with fcol2:
             setores_disponiveis = sorted(list(df_screener['sector'].dropna().unique()))
             filtro_setor = st.multiselect("Filtrar por Setor:", options=setores_disponiveis, default=[])
+            ocultar_balanco = st.checkbox("🛡️ Ocultar ações com Balanço nos próximos 7 dias", value=False)
 
         with fcol3:
             rsi_max = st.slider("IFR (14) Máximo:", min_value=10, max_value=90, value=65)
+            apenas_liquidas = st.checkbox("💧 Apenas Ações com Liquidez >= R$ 5M/dia", value=True)
 
         # Aplicar Filtros
         df_filtered = df_screener.copy()
@@ -158,20 +183,25 @@ if selected_menu == "🎯 Radar de Oportunidades":
             df_filtered = df_filtered[df_filtered['signal'].isin(filtro_sinal)]
         if filtro_setor:
             df_filtered = df_filtered[df_filtered['sector'].isin(filtro_setor)]
+        if apenas_lideres:
+            df_filtered = df_filtered[df_filtered['is_outperforming'] == True]
+        if ocultar_balanco:
+            df_filtered = df_filtered[df_filtered['has_earnings_risk'] == False]
+        if apenas_liquidas and 'is_liquid' in df_filtered.columns:
+            df_filtered = df_filtered[df_filtered['is_liquid'] == True]
+
         df_filtered = df_filtered[df_filtered['rsi'] <= rsi_max]
 
-        # Ordenar por prioridade (Comprar Forte primeiro, depois Compra, etc.)
-        df_filtered = df_filtered.sort_values(by=["priority", "risk_reward"], ascending=[False, False])
+        # Ordenar por prioridade e Alpha relativo
+        df_filtered = df_filtered.sort_values(by=["priority", "alpha_20d", "risk_reward"], ascending=[False, False, False])
 
         st.markdown(f"#### Resultados Encontrados: **{len(df_filtered)} ativos**")
 
-        # Formatação para a visualização
         display_cols = [
-            "ticker", "name", "sector", "close", "trend", "rsi",
-            "signal", "strategy", "entry_price", "stop_loss", "stop_loss_pct",
-            "target_1", "target_2", "risk_reward", "data_source"
+            "ticker", "name", "sector", "close", "trend", "rs_badge", "rsi",
+            "signal", "strategy", "calendar_alert", "liquidity_badge",
+            "entry_price", "stop_loss", "stop_loss_pct", "target_1", "target_2", "risk_reward"
         ]
-        # Garantir que colunas existam
         cols_present = [c for c in display_cols if c in df_filtered.columns]
 
         col_rename = {
@@ -180,16 +210,18 @@ if selected_menu == "🎯 Radar de Oportunidades":
             "sector": "Setor",
             "close": "Preço (R$)",
             "trend": "Tendência",
+            "rs_badge": "Força Relativa (vs Ibov)",
             "rsi": "IFR (14)",
             "signal": "Sinal Técnico",
             "strategy": "Estratégia",
+            "calendar_alert": "Calendário / Risco",
+            "liquidity_badge": "Liquidez Diária",
             "entry_price": "Entrada (R$)",
             "stop_loss": "Stop (R$)",
             "stop_loss_pct": "Stop (%)",
             "target_1": "Alvo 1 (R$)",
             "target_2": "Alvo 2 (R$)",
-            "risk_reward": "Risco/Retorno",
-            "data_source": "Origem dos Dados"
+            "risk_reward": "Risco/Retorno"
         }
 
         df_display = df_filtered[cols_present].rename(columns=col_rename)
@@ -205,7 +237,15 @@ if selected_menu == "🎯 Radar de Oportunidades":
                 return "background-color: #FF8A80; color: black;"
             return ""
 
+        def color_calendar(val):
+            if "Balanço" in str(val):
+                return "background-color: #FFCDD2; color: #B71C1C; font-weight: bold;"
+            return ""
+
         styled_df = df_display.style.applymap(color_signals, subset=["Sinal Técnico"])
+        if "Calendário / Risco" in df_display.columns:
+            styled_df = styled_df.applymap(color_calendar, subset=["Calendário / Risco"])
+
         st.dataframe(styled_df, use_container_width=True, height=450)
 
         # Destaques de Compra
@@ -213,16 +253,19 @@ if selected_menu == "🎯 Radar de Oportunidades":
         if not compras_df.empty:
             st.markdown("### 🌟 Destaques de Compra para Análise")
             for _, item in compras_df.iterrows():
-                with st.expander(f"🟢 **{item['ticker']} - {item['name']}** | {item['strategy']} (Preço: R$ {item['close']:.2f})"):
+                with st.expander(f"🟢 **{item['ticker']} - {item['name']}** | {item['strategy']} (Preço: R$ {item['close']:.2f}) | {item['rs_badge']}"):
                     c_col1, c_col2, c_col3 = st.columns([1, 1, 2])
                     with c_col1:
                         st.write(f"**Entrada:** R$ {item['entry_price']:.2f}")
                         st.write(f"**Stop Loss:** R$ {item['stop_loss']:.2f} (`{item['stop_loss_pct']:.1f}%`)")
+                        st.write(f"**Liquidez:** {item.get('liquidity_badge', 'N/A')}")
                     with c_col2:
                         st.write(f"**Alvo 1 (Parcial):** R$ {item['target_1']:.2f} (`+{item['target_1_pct']:.1f}%`)")
                         st.write(f"**Alvo 2 (Final):** R$ {item['target_2']:.2f} (`+{item['target_2_pct']:.1f}%`)")
                         st.write(f"**Relação R:R:** 1:{item['risk_reward']}")
                     with c_col3:
+                        if item.get('has_earnings_risk', False):
+                            st.warning(f"🚨 **Atenção:** {item['calendar_alert']}")
                         st.info(f"**Racional Técnico:** {item['reason']}")
 
 # -----------------------------------------------------------------------------
@@ -254,9 +297,17 @@ elif selected_menu == "📈 Análise Gráfica & Técnica":
             min_candles=candle_limit
         )
 
+        bova_df, _ = get_or_sync_ticker_candles("BOVA11.SA", min_candles=100)
+        cal_info = fetch_calendar_events(ticker_escolhido)
+
         if not df_candles.empty:
             df_with_ind = calculate_all_indicators(df_candles)
-            signal_data = analyze_swing_trade_signals(df_with_ind, ticker_escolhido)
+            signal_data = analyze_swing_trade_signals(
+                df_with_ind,
+                ticker_escolhido,
+                df_benchmark=bova_df,
+                calendar_info=cal_info
+            )
         else:
             df_with_ind = pd.DataFrame()
             signal_data = None
@@ -266,24 +317,31 @@ elif selected_menu == "📈 Análise Gráfica & Técnica":
     else:
         # Indicador de Origem
         badge_cor = "green" if "banco" in origem_dados else "blue"
-        st.caption(f"📦 Fonte: **:{badge_cor}[{origem_dados.upper()}]** | Candles carregados: **{len(df_with_ind)}** | Último pregão: **{df_with_ind.index[-1].strftime('%d/%m/%Y')}**")
+        st.caption(f"📦 Fonte: **:{badge_cor}[{origem_dados.upper()}]** | Candles: **{len(df_with_ind)}** | Último pregão: **{df_with_ind.index[-1].strftime('%d/%m/%Y')}**")
 
         # Cartão de Status do Ativo
         st.markdown("### Painel Operacional")
-        mcol1, mcol2, mcol3, mcol4, mcol5 = st.columns(5)
+        mcol1, mcol2, mcol3, mcol4, mcol5, mcol6 = st.columns(6)
 
         preco_atual = float(df_with_ind['Close'].iloc[-1])
         preco_anterior = float(df_with_ind['Close'].iloc[-2]) if len(df_with_ind) >= 2 else preco_atual
         var_dia = ((preco_atual - preco_anterior) / preco_anterior) * 100.0 if preco_anterior > 0 else 0.0
 
         mcol1.metric("Preço Atual", f"R$ {preco_atual:.2f}", f"{var_dia:+.2f}%")
-        mcol2.metric("Tendência", signal_data['trend'] if signal_data else "N/A")
+        mcol2.metric("Força vs Ibov", signal_data['rs_badge'] if signal_data else "N/A")
         mcol3.metric("IFR (14)", f"{signal_data['rsi']:.1f}" if signal_data else "N/A")
         mcol4.metric("Sinal Técnico", signal_data['signal'] if signal_data else "N/A")
         mcol5.metric("Risco / Retorno", f"1:{signal_data['risk_reward']}" if signal_data else "N/A")
+        mcol6.metric("Liquidez Média", signal_data.get('liquidity_badge', 'N/A') if signal_data else "N/A")
+
+        # Alerta de Balanço Próximo destacado
+        if signal_data and signal_data.get('has_earnings_risk', False):
+            st.warning(f"🚨 **ALERTA DE RISCO DE EVENTO:** {signal_data['calendar_alert']}! Aberturas com gap podem furar o stop técnico planejado.")
 
         if signal_data and signal_data.get("reason"):
-            if signal_data['priority'] >= 2:
+            if "Divergência" in signal_data.get("strategy", ""):
+                st.success(f"🔥 **SUPER OPORTUNIDADE (Divergência de Alta no IFR):**\n\n{signal_data['reason']}")
+            elif signal_data['priority'] >= 2:
                 st.success(f"🎯 **Setup Detectado:** {signal_data['strategy']}\n\n**Racional:** {signal_data['reason']}")
             elif signal_data['priority'] == 1:
                 st.warning(f"👀 **Observação:** {signal_data['strategy']}\n\n**Racional:** {signal_data['reason']}")
@@ -456,7 +514,6 @@ elif selected_menu == "⚙️ Gerenciar Carteira (Ativos)":
         if st.button("➕ Adicionar Ativo", use_container_width=True):
             if novo_ticker:
                 symbol = novo_ticker if novo_ticker.endswith(".SA") else f"{novo_ticker}.SA"
-                # Testar se yfinance reconhece
                 with st.spinner(f"Verificando {symbol} na B3..."):
                     df_check, _ = get_or_sync_ticker_candles(symbol, force_download=True, min_candles=50)
                     if df_check.empty:

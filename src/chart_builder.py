@@ -176,6 +176,20 @@ def build_swing_chart(
         fig.add_hline(y=30, line_dash="dot", line_color="rgba(38, 166, 154, 0.7)", row=3, col=1)
         fig.add_hline(y=50, line_dash="dash", line_color="rgba(255, 255, 255, 0.2)", row=3, col=1)
 
+        # Destacar Divergência de Alta no IFR se detectada
+        if signal_info and "Divergência" in str(signal_info.get("strategy", "")):
+            fig.add_annotation(
+                x=df.index[-1],
+                y=float(df['RSI'].iloc[-1]),
+                text="📈 Divergência de Alta!",
+                showarrow=True,
+                arrowhead=2,
+                arrowcolor="#00E676",
+                font=dict(color="#00E676", size=12, family="Arial"),
+                bgcolor="rgba(0, 50, 0, 0.7)",
+                row=3, col=1
+            )
+
     # 4. MACD
     if show_macd and 'MACD' in df.columns:
         fig.add_trace(

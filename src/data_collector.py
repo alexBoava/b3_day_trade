@@ -13,6 +13,9 @@ from src.strategies import analyze_swing_trade_signals
 
 logger = logging.getLogger(__name__)
 
+# Cache em memória para eventos de calendário (Balanços e Dividendos)
+_CALENDAR_CACHE: Dict[str, Tuple[datetime.datetime, Dict[str, Any]]] = {}
+
 def ensure_initial_tickers():
     """Garante que a lista inicial padrão de tickers da B3 esteja cadastrada."""
     init_db()
@@ -73,16 +76,13 @@ def clean_yfinance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     if isinstance(df.columns, pd.MultiIndex):
-        # Se nível 0 são os tipos ('Open', 'High', etc.) e nível 1 os tickers:
         df.columns = df.columns.get_level_values(0)
 
-    # Converter índice para datetime puro sem timezone para evitar conflitos com SQLite/Postgres
     if hasattr(df.index, 'tz_localize') and df.index.tz is not None:
         df.index = df.index.tz_convert(None)
     elif hasattr(df.index, 'tz') and df.index.tz is not None:
         df.index = df.index.tz_localize(None)
 
-    # Padronizar nomes de colunas
     col_mapping = {col: col.capitalize() for col in df.columns}
     df = df.rename(columns=col_mapping)
 
@@ -95,9 +95,7 @@ def clean_yfinance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def fetch_stock_candles(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
-    """
-    Baixa os dados históricos de um ticker via yfinance e retorna DataFrame limpo.
-    """
+    """Baixa os dados históricos de um ticker via yfinance e retorna DataFrame limpo."""
     try:
         data = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
         df = clean_yfinance_dataframe(data)
@@ -105,6 +103,51 @@ def fetch_stock_candles(ticker: str, period: str = "1y", interval: str = "1d") -
     except Exception as e:
         logger.error(f"Erro ao baixar dados para {ticker}: {e}")
         return pd.DataFrame()
+
+def fetch_calendar_events(ticker: str) -> Dict[str, Any]:
+    """
+    Obtém datas de eventos corporativos relevantes (Balanço Trimestral e Data-Ex de Proventos).
+    Utiliza cache em memória de 6 horas para evitar requisições redundantes.
+    """
+    now = datetime.datetime.now()
+    if ticker in _CALENDAR_CACHE:
+        cached_time, cached_data = _CALENDAR_CACHE[ticker]
+        if (now - cached_time).total_seconds() < 21600:
+            return cached_data
+
+    info: Dict[str, Any] = {
+        "earnings_date": None,
+        "days_to_earnings": None,
+        "ex_dividend_date": None,
+        "days_to_dividend": None
+    }
+    today = datetime.date.today()
+
+    try:
+        t = yf.Ticker(ticker)
+        cal = t.calendar
+        if isinstance(cal, dict):
+            ed = cal.get('Earnings Date')
+            if ed and isinstance(ed, list) and len(ed) > 0:
+                first_ed = ed[0]
+                if hasattr(first_ed, 'date'):
+                    first_ed = first_ed.date()
+                if isinstance(first_ed, datetime.date):
+                    info["earnings_date"] = first_ed
+                    info["days_to_earnings"] = (first_ed - today).days
+
+            ex_div = cal.get('Ex-Dividend Date')
+            if ex_div:
+                if hasattr(ex_div, 'date'):
+                    ex_div = ex_div.date()
+                if isinstance(ex_div, datetime.date):
+                    info["ex_dividend_date"] = ex_div
+                    info["days_to_dividend"] = (ex_div - today).days
+    except Exception as e:
+        logger.debug(f"Não foi possível obter calendário de {ticker}: {e}")
+
+    _CALENDAR_CACHE[ticker] = (now, info)
+    return info
 
 def get_latest_candle_date(ticker: str) -> Optional[datetime.date]:
     """Retorna a data mais recente armazenada no banco para o ticker."""
@@ -121,7 +164,6 @@ def get_candle_count(ticker: str) -> int:
 def is_trading_day_up_to_date(latest_date: Optional[datetime.date]) -> bool:
     """
     Avalia se o último candle no banco já corresponde ao pregão fechado mais recente da B3.
-    Evita chamadas de rede desnecessárias.
     """
     if not latest_date:
         return False
@@ -130,32 +172,22 @@ def is_trading_day_up_to_date(latest_date: Optional[datetime.date]) -> bool:
     if latest_date >= today:
         return True
 
-    weekday = today.weekday()  # 0=Segunda, 4=Sexta, 5=Sábado, 6=Domingo
+    weekday = today.weekday()
     now = datetime.datetime.now()
 
-    # Final de semana: se o último candle for da sexta-feira anterior, está 100% atualizado
     if weekday == 5 and latest_date >= (today - datetime.timedelta(days=1)):
         return True
     if weekday == 6 and latest_date >= (today - datetime.timedelta(days=2)):
         return True
-
-    # Segunda-feira antes do fechamento do pregão (18h)
     if weekday == 0 and now.hour < 18 and latest_date >= (today - datetime.timedelta(days=3)):
         return True
-
-    # Terça a Sexta antes das 18h: se tiver o dia de ontem, está atualizado com o último pregão completo
     if weekday in [1, 2, 3, 4] and now.hour < 18 and latest_date >= (today - datetime.timedelta(days=1)):
         return True
 
     return False
 
 def save_candles_to_db(ticker: str, df: pd.DataFrame) -> Tuple[int, int]:
-    """
-    Salva ou atualiza candles no banco de dados.
-    - Insere novos candles (evitando duplicatas).
-    - Atualiza candles recentes (últimos 3 dias) para consolidar o preço de fechamento pós-pregão.
-    Retorna tupla: (inseridos, atualizados).
-    """
+    """Salva ou atualiza candles no banco de dados."""
     if df.empty:
         return (0, 0)
 
@@ -165,7 +197,6 @@ def save_candles_to_db(ticker: str, df: pd.DataFrame) -> Tuple[int, int]:
     recent_threshold = today - datetime.timedelta(days=3)
 
     with get_db_session() as session:
-        # Obter todas as datas já gravadas para o ticker
         existing_records = {
             r.date: r for r in session.query(DailyCandle).filter(DailyCandle.ticker_symbol == ticker).all()
         }
@@ -174,7 +205,6 @@ def save_candles_to_db(ticker: str, df: pd.DataFrame) -> Tuple[int, int]:
             c_date = idx.date() if hasattr(idx, 'date') else idx
 
             if c_date in existing_records:
-                # Se o candle já existe e for recente, atualiza preços e volume de fechamento
                 if c_date >= recent_threshold:
                     candle = existing_records[c_date]
                     candle.open = float(row['Open'])
@@ -185,7 +215,6 @@ def save_candles_to_db(ticker: str, df: pd.DataFrame) -> Tuple[int, int]:
                     candle.volume = int(row['Volume']) if not pd.isna(row['Volume']) else 0
                     updated_count += 1
             else:
-                # Inserção de novo candle
                 try:
                     candle = DailyCandle(
                         ticker_symbol=ticker,
@@ -221,7 +250,7 @@ def load_candles_from_db(ticker: str, limit: int = 300) -> pd.DataFrame:
         if not records:
             return pd.DataFrame()
 
-        records.reverse()  # Ordenar cronologicamente
+        records.reverse()
         data = [{
             "Date": r.date,
             "Open": r.open,
@@ -238,63 +267,119 @@ def load_candles_from_db(ticker: str, limit: int = 300) -> pd.DataFrame:
         return df
 
 def get_or_sync_ticker_candles(ticker: str, force_download: bool = False, min_candles: int = 120) -> Tuple[pd.DataFrame, str]:
-    """
-    Estratégia Cache-First Inteligente:
-    1. Se o banco já possui histórico e está em dia com a B3 -> Retorna direto do banco (0ms de rede).
-    2. Se faltam poucos dias (ex: até 20 dias) -> Baixa APENAS os dias recentes (incremental).
-    3. Se o banco está vazio ou com poucos candles ou force_download=True -> Baixa histórico completo (1 ano).
-    Retorna tupla: (df_candles, origem_str).
-    """
+    """Cache-First Inteligente com busca incremental."""
     count = get_candle_count(ticker)
     latest_date = get_latest_candle_date(ticker)
     today = datetime.date.today()
 
-    # 1. Se já tem histórico e o pregão mais recente já está no banco, não faz download
     if not force_download and count >= min_candles and is_trading_day_up_to_date(latest_date):
         df_cached = load_candles_from_db(ticker, limit=min_candles * 2)
         if not df_cached.empty and len(df_cached) >= 20:
             return df_cached, "banco (cache local atualizado)"
 
-    # 2. Se temos histórico razoável, mas faltam alguns dias recentes (atualização incremental)
     if not force_download and count >= min_candles and latest_date:
         days_gap = (today - latest_date).days
         if days_gap <= 20:
-            logger.info(f"Atualização incremental para {ticker} ({days_gap} dias atrás)...")
             delta_df = fetch_stock_candles(ticker, period="1mo", interval="1d")
             if not delta_df.empty:
                 save_candles_to_db(ticker, delta_df)
                 df_updated = load_candles_from_db(ticker, limit=min_candles * 2)
                 return df_updated, "banco (após sincronização incremental)"
 
-    # 3. Se não tem dados suficientes no banco ou solicitou force_download
-    logger.info(f"Baixando histórico completo de 1 ano para {ticker}...")
     fresh_df = fetch_stock_candles(ticker, period="1y", interval="1d")
     if not fresh_df.empty:
         save_candles_to_db(ticker, fresh_df)
         df_full = load_candles_from_db(ticker, limit=300)
         return df_full, "yfinance (download inicial gravado no banco)"
 
-    # Fallback se a internet falhou: tenta o que estiver no banco
     df_fallback = load_candles_from_db(ticker, limit=300)
     return df_fallback, "banco (offline / fallback)"
 
-def sync_ticker_data(ticker: str, force_download: bool = False) -> Optional[Dict[str, Any]]:
+def get_market_regime() -> Dict[str, Any]:
     """
-    Sincroniza os dados de um ticker utilizando a estratégia de cache em banco.
-    Calcula indicadores e avalia os sinais de Swing Trade.
+    Avalia a saúde geral do mercado brasileiro via BOVA11 / Ibovespa.
+    Classifica o regime em Favorável, Cautela ou Defensivo.
+    """
+    bova_df, _ = get_or_sync_ticker_candles("BOVA11.SA", min_candles=100)
+    if bova_df.empty or len(bova_df) < 25:
+        return {
+            "status": "Indefinido",
+            "badge": "⚪ Mercado Neutro",
+            "color": "gray",
+            "detail": "Sem dados suficientes do Ibovespa/BOVA11.",
+            "bova_close": 0.0,
+            "bova_var": 0.0
+        }
+
+    bova_ind = calculate_all_indicators(bova_df)
+    last = bova_ind.iloc[-1]
+    c = float(last['Close'])
+    ema20 = float(last['EMA20'])
+    ema50 = float(last['EMA50'])
+
+    prev_c = float(bova_ind['Close'].iloc[-2]) if len(bova_ind) >= 2 else c
+    var_dia = ((c - prev_c) / prev_c) * 100.0 if prev_c > 0 else 0.0
+
+    if c > ema20 > ema50:
+        return {
+            "status": "Favorável",
+            "badge": "🟢 Mercado Favorável (Tendência de Alta)",
+            "color": "green",
+            "bova_close": c,
+            "bova_var": var_dia,
+            "detail": "Ibov operando acima das médias EMA 20 e 50. Cenário ideal para swing trade."
+        }
+    elif c > ema50:
+        return {
+            "status": "Cautela",
+            "badge": "🟡 Mercado em Correção (Cautela)",
+            "color": "orange",
+            "bova_close": c,
+            "bova_var": var_dia,
+            "detail": "Ibov acima da EMA 50, mas abaixo da EMA 20. Opere com lote reduzido."
+        }
+    else:
+        return {
+            "status": "Defensivo",
+            "badge": "🔴 Mercado Defensivo (Abaixo da EMA 50)",
+            "color": "red",
+            "bova_close": c,
+            "bova_var": var_dia,
+            "detail": "Ibov em tendência de baixa. Priorizar caixa e compras de reversão estrita."
+        }
+
+def sync_ticker_data(
+    ticker: str,
+    force_download: bool = False,
+    df_benchmark: Optional[pd.DataFrame] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Sincroniza os dados de um ticker utilizando cache em banco,
+    compara força relativa contra o Ibov e consulta eventos corporativos.
     """
     df, origem = get_or_sync_ticker_candles(ticker, force_download=force_download)
 
     if df.empty or len(df) < 20:
         return None
 
+    # Se benchmark não foi passado e não for o próprio BOVA11, carrega do banco
+    if df_benchmark is None and ticker != "BOVA11.SA":
+        df_benchmark, _ = get_or_sync_ticker_candles("BOVA11.SA", min_candles=100)
+
+    # Eventos de calendário (Balanço Trimestral e Proventos)
+    cal_info = fetch_calendar_events(ticker)
+
     # Adiciona indicadores
     df_with_ind = calculate_all_indicators(df)
-    signal = analyze_swing_trade_signals(df_with_ind, ticker)
+    signal = analyze_swing_trade_signals(
+        df_with_ind,
+        ticker,
+        df_benchmark=df_benchmark,
+        calendar_info=cal_info
+    )
 
     if signal:
         signal["data_source"] = origem
-        # Se gerou um sinal relevante de compra ou observação, salva no histórico
         if signal["signal"] in ["COMPRA FORTE", "COMPRA", "ATENÇÃO (Aguardando Gatilho)"]:
             save_signal_to_db(signal)
 
@@ -343,8 +428,11 @@ def sync_all_tickers(
 ) -> List[Dict[str, Any]]:
     """
     Sincroniza todos os ativos ativos e retorna lista consolidada de análises.
-    Prioriza o banco de dados e só baixa o que realmente estiver desatualizado.
+    Sincroniza primeiro o BOVA11 para servir de benchmark para todos os papéis.
     """
+    # 1. Sincroniza o Benchmark primeiro
+    bova_df, _ = get_or_sync_ticker_candles("BOVA11.SA", force_download=force_download, min_candles=100)
+
     tickers = get_active_tickers()
     total = len(tickers)
     results = []
@@ -354,7 +442,7 @@ def sync_all_tickers(
         if progress_callback:
             progress_callback((i + 1) / total, f"Processando {symbol} ({t['name']})...")
 
-        analysis = sync_ticker_data(symbol, force_download=force_download)
+        analysis = sync_ticker_data(symbol, force_download=force_download, df_benchmark=bova_df)
         if analysis:
             analysis["name"] = t["name"]
             analysis["sector"] = t["sector"]
