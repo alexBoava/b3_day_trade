@@ -1,0 +1,40 @@
+services:
+  # Banco de Dados Relacional PostgreSQL para persistência de candles, ativos e sinais
+  db:
+    image: postgres:16-alpine
+    container_name: b3_postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-b3_swing_trade}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d b3_swing_trade"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Aplicação Web Streamlit + Motor de Análise Técnica
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: b3_swing_trade_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-b3_swing_trade}
+      STREAMLIT_SERVER_PORT: 8501
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+    ports:
+      - "8501:8501"
+
+volumes:
+  pgdata:
+    driver: local

@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+b3_swing_trade.db
+.git
+.gitignore
+.dockerignore
+*.log
+.coverage
+htmlcov/
+.pytest_cache/
