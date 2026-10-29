@@ -62,12 +62,15 @@ def build_swing_chart(
         row=1, col=1
     )
 
-    # Bandas de Bollinger
+    # Bandas de Bollinger (Cor com alta visibilidade para temas Claro e Escuro)
     if show_bb and 'BB_Upper' in df.columns and 'BB_Lower' in df.columns:
+        bb_color = 'rgba(92, 107, 192, 0.85)'   # Indigo com excelente contraste
+        bb_fill = 'rgba(92, 107, 192, 0.13)'    # Preenchimento translúcido visível
+
         fig.add_trace(
             go.Scatter(
                 x=df.index, y=df['BB_Upper'],
-                mode='lines', line=dict(color='rgba(150, 150, 200, 0.4)', width=1, dash='dot'),
+                mode='lines', line=dict(color=bb_color, width=1.5, dash='dash'),
                 name="BB Superior", showlegend=False
             ),
             row=1, col=1
@@ -75,8 +78,8 @@ def build_swing_chart(
         fig.add_trace(
             go.Scatter(
                 x=df.index, y=df['BB_Lower'],
-                mode='lines', line=dict(color='rgba(150, 150, 200, 0.4)', width=1, dash='dot'),
-                fill='tonexty', fillcolor='rgba(100, 100, 180, 0.05)',
+                mode='lines', line=dict(color=bb_color, width=1.5, dash='dash'),
+                fill='tonexty', fillcolor=bb_fill,
                 name="Bandas Bollinger", showlegend=True
             ),
             row=1, col=1

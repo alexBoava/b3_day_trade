@@ -319,20 +319,24 @@ elif selected_menu == "📈 Análise Gráfica & Técnica":
         badge_cor = "green" if "banco" in origem_dados else "blue"
         st.caption(f"📦 Fonte: **:{badge_cor}[{origem_dados.upper()}]** | Candles: **{len(df_with_ind)}** | Último pregão: **{df_with_ind.index[-1].strftime('%d/%m/%Y')}**")
 
-        # Cartão de Status do Ativo
+        # Cartão de Status do Ativo em 2 Linhas para Máxima Legibilidade
         st.markdown("### Painel Operacional")
-        mcol1, mcol2, mcol3, mcol4, mcol5, mcol6 = st.columns(6)
 
         preco_atual = float(df_with_ind['Close'].iloc[-1])
         preco_anterior = float(df_with_ind['Close'].iloc[-2]) if len(df_with_ind) >= 2 else preco_atual
         var_dia = ((preco_atual - preco_anterior) / preco_anterior) * 100.0 if preco_anterior > 0 else 0.0
 
-        mcol1.metric("Preço Atual", f"R$ {preco_atual:.2f}", f"{var_dia:+.2f}%")
-        mcol2.metric("Força vs Ibov", signal_data['rs_badge'] if signal_data else "N/A")
-        mcol3.metric("IFR (14)", f"{signal_data['rsi']:.1f}" if signal_data else "N/A")
-        mcol4.metric("Sinal Técnico", signal_data['signal'] if signal_data else "N/A")
-        mcol5.metric("Risco / Retorno", f"1:{signal_data['risk_reward']}" if signal_data else "N/A")
-        mcol6.metric("Liquidez Média", signal_data.get('liquidity_badge', 'N/A') if signal_data else "N/A")
+        # Linha 1: Preço, Força Relativa e IFR
+        r1_col1, r1_col2, r1_col3 = st.columns(3)
+        r1_col1.metric("Preço Atual", f"R$ {preco_atual:.2f}", f"{var_dia:+.2f}%")
+        r1_col2.metric("Força vs Ibov", signal_data['rs_badge'] if signal_data else "N/A")
+        r1_col3.metric("IFR (14)", f"{signal_data['rsi']:.1f}" if signal_data else "N/A")
+
+        # Linha 2: Sinal Técnico, Risco/Retorno e Liquidez Média
+        r2_col1, r2_col2, r2_col3 = st.columns(3)
+        r2_col1.metric("Sinal Técnico", signal_data['signal'] if signal_data else "N/A")
+        r2_col2.metric("Risco / Retorno", f"1 : {signal_data['risk_reward']}" if signal_data else "N/A")
+        r2_col3.metric("Liquidez Média Diária", signal_data.get('liquidity_badge', 'N/A') if signal_data else "N/A")
 
         # Alerta de Balanço Próximo destacado
         if signal_data and signal_data.get('has_earnings_risk', False):

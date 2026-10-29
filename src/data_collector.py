@@ -2,6 +2,7 @@ import datetime
 import logging
 from typing import List, Optional, Callable, Dict, Any, Tuple
 import pandas as pd
+import numpy as np
 import yfinance as yf
 from sqlalchemy import func
 
@@ -91,6 +92,13 @@ def clean_yfinance_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             logger.warning(f"Coluna esperada {col} não encontrada no dataframe do yfinance.")
             return pd.DataFrame()
+
+    # Sanitizar candles com preços zerados gerados por leilões/fechamento do yfinance
+    df = df[df['Close'] > 0].copy()
+    for col in ['Open', 'High', 'Low']:
+        df[col] = df[col].replace(0, np.nan).fillna(df['Close'])
+    df['High'] = df[['High', 'Open', 'Close']].max(axis=1)
+    df['Low'] = df[['Low', 'Open', 'Close']].min(axis=1)
 
     return df
 
@@ -264,6 +272,14 @@ def load_candles_from_db(ticker: str, limit: int = 300) -> pd.DataFrame:
         df = pd.DataFrame(data)
         df['Date'] = pd.to_datetime(df['Date'])
         df.set_index('Date', inplace=True)
+
+        # Sanitizar anomalias de preços zerados
+        df = df[df['Close'] > 0].copy()
+        for col in ['Open', 'High', 'Low']:
+            df[col] = df[col].replace(0, np.nan).fillna(df['Close'])
+        df['High'] = df[['High', 'Open', 'Close']].max(axis=1)
+        df['Low'] = df[['Low', 'Open', 'Close']].min(axis=1)
+
         return df
 
 def get_or_sync_ticker_candles(ticker: str, force_download: bool = False, min_candles: int = 120) -> Tuple[pd.DataFrame, str]:
