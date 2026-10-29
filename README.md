@@ -74,6 +74,15 @@ Para parar a execução:
 docker compose down
 ```
 
+### 3. Acessar o Banco via DBeaver (Porta 5433)
+
+Para evitar conflito com instâncias locais do PostgreSQL na porta padrão (5432), o Docker expõe a porta **5433**:
+* **Host:** `localhost`
+* **Porta:** `5433`
+* **Database:** `b3_swing_trade`
+* **Usuário:** `postgres`
+* **Senha:** `postgres`
+
 ---
 
 ## 📦 Como Disponibilizar e Compartilhar a Imagem Docker
